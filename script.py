@@ -68,28 +68,66 @@ def remove_img_tags(text):
     return text
 
 # Discordにコメントを送信する関数
-def send_to_discord(display_name, text):
+import re
+import requests
+
+# YouTubeのロゴURLをデフォルトのアイコンとして使用
+DEFAULT_AVATAR_URL = 'https://upload.wikimedia.org/wikipedia/commons/4/42/YouTube_icon_%282013-2017%29.png'
+
+def remove_img_tags(text):
+    # <img src="...">の部分を削除
+    img_tag_pattern = r'<img src=".*?" alt=".*?"\s*/?>'
+    text = re.sub(img_tag_pattern, '', text)
+    return text
+
+def is_valid_url(url):
+    # HTTP/HTTPS以外のURL形式を無効として扱う
+    return url.startswith('http://') or url.startswith('https://')
+
+def send_to_discord(display_name, text, original_profile_image_url):
     try:
         # メッセージから<img>タグを削除
         text_cleaned = remove_img_tags(text)
-        
+
+        # メッセージが空の場合は送信しない
+        if not text_cleaned.strip():
+            print(f"空のメッセージはDiscordに送信しません。")
+            return
+
+        # avatar_urlが有効なURLか確認し、無効ならデフォルトアイコンを設定
+        avatar_url = original_profile_image_url if is_valid_url(original_profile_image_url) else DEFAULT_AVATAR_URL
+
         # 除去後のメッセージを送信
         payload = {
             'username': display_name,
-            'content': text_cleaned
+            'content': text_cleaned,
+            'avatar_url': avatar_url  # アイコンを追加
         }
         headers = {
             'Content-Type': 'application/json'
         }
+
+        print(f"送信するペイロード: {payload}")  # 送信前にペイロードを表示
+
         response = requests.post(DISCORD_WEBHOOK_URL, json=payload, headers=headers)
         response.raise_for_status()  # エラーチェック
-        print(f"Comment sent to Discord: [{display_name}] {text_cleaned}")
+        print(f"Discordにコメントを送信しました: [{display_name}] {text_cleaned}")
+
     except requests.exceptions.RequestException as e:
-        print(f"Error sending comment to Discord: {e}")
+        print(f"Discordへのコメント送信でエラーが発生しました: {e}")
+        if e.response:
+            print(f"エラーレスポンス: {e.response.text}")  # エラーレスポンスを表示
+
+
 
 def send_to_minecraft(text, timestamp, display_name):
     try:
         text_cleaned = remove_img_tags(text)
+
+        # メッセージが空の場合は送信しない
+        if not text_cleaned.strip():
+            print(f"空のメッセージはMinecraftに送信しません。")
+            return
 
         # カスタムフォーマットを適用（デフォルトフォーマットも設定）
         custom_format = config.get('custom_format', "<{display_name}>: {message}")  # 色も指定できるように追加
@@ -107,24 +145,25 @@ def send_to_minecraft(text, timestamp, display_name):
                 color=color  # 色をフォーマットに追加
             )
         except KeyError as e:
-            print(f"Missing key in format string: {e}. Falling back to default format.")
+            print(f"フォーマット文字列にキーが不足しています: {e}. デフォルトフォーマットに戻します。")
             final_message = f"<{display_name}> {text_cleaned} ({color})"
         except ValueError as e:
-            print(f"Invalid format: {e}. Falling back to default format.")
+            print(f"無効なフォーマットです: {e}. デフォルトフォーマットに戻します。")
             final_message = f"<{display_name}> {text_cleaned} ({color})"
 
         # tellrawコマンドを生成（色を適用）
         tellraw_command = f'tellraw @a {{"text":"{final_message}","color":"{color}"}}'
-        print(f"Executing tellraw command: {tellraw_command}")
+        print(f"tellrawコマンドを実行中: {tellraw_command}")
 
         # RCONを使ってコマンドを送信
         with MCRcon(MINECRAFT_RCON_HOST, MINECRAFT_RCON_PASSWORD, port=MINECRAFT_RCON_PORT) as mcr:
             response = mcr.command(tellraw_command)
-            print(f"RCON Response: {response}")
+            print(f"RCONのレスポンス: {response}")
 
-        print(f"Sent to Minecraft: {final_message}")
+        if text_cleaned.strip():  # メッセージが空でない場合にのみ表示
+            print(f"Minecraftに送信しました: {final_message}")
     except Exception as e:
-        print(f"Error sending to Minecraft: {e}")
+        print(f"Minecraftへの送信でエラーが発生しました: {e}")
 
 
 # 古いコメントを削除
@@ -154,13 +193,14 @@ def fetch_comments(api_endpoint):
             display_name = comment['data']['displayName']
             text = comment['data']['comment']
             comment_id = comment['data']['id']
+            original_profile_image_url = comment['data'].get('originalProfileImage', '')  # 追加: アイコンURLを取得
 
             # デバッグ: コメント内容の確認
             print(f"DEBUG: Received comment text: {text}")
 
             # 既に送信されたコメントでない場合のみ送信
             if comment_id not in processed_comments:
-                send_to_discord(display_name, text)
+                send_to_discord(display_name, text, original_profile_image_url)  # アイコンURLも渡す
                 send_to_minecraft(text, comment['data']['timestamp'], display_name)  # 修正ポイント
                 processed_comments[comment_id] = current_time.isoformat()
 
