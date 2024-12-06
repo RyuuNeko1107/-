@@ -167,16 +167,21 @@ def send_to_minecraft(text, timestamp, display_name):
 
 
 # 古いコメントを削除
+        remove_expired_comments()
+
+# 初コメント判定用の辞書
+live_comments_tracker = {}
+
 def remove_expired_comments():
     current_time = datetime.now(timezone.utc)
     expiry_time = current_time - timedelta(days=COMMENT_EXPIRY_DAYS)
-    expired_keys = [key for key, timestamp in processed_comments.items()
+    expired_keys = [key for key, (timestamp, live_id) in processed_comments.items()
                     if datetime.fromisoformat(timestamp) < expiry_time]
     for key in expired_keys:
         del processed_comments[key]
 
 def fetch_comments(api_endpoint):
-    global processed_comments
+    global processed_comments, live_comments_tracker
     try:
         response = requests.get(api_endpoint)
         response.raise_for_status()
@@ -193,26 +198,40 @@ def fetch_comments(api_endpoint):
             display_name = comment['data']['displayName']
             text = comment['data']['comment']
             comment_id = comment['data']['id']
-            original_profile_image_url = comment['data'].get('originalProfileImage', '')  # 追加: アイコンURLを取得
+            original_profile_image_url = comment['data'].get('originalProfileImage', '')
+
+            # 1.2時点で追加
+            live_id = comment['data']['liveId']
+            user_id = comment['data']['userId']
+            
+            # 初コメント判定
+            is_first_time = False
+            # live_idが新しい場合、またはその配信枠でまだコメントされていない場合
+            if live_id not in live_comments_tracker:
+                live_comments_tracker[live_id] = set()  # 新しい枠を初期化
+                is_first_time = True
+            # ユーザーIDがその配信枠で初めての場合
+            elif user_id not in live_comments_tracker[live_id]:
+                is_first_time = True
 
             # デバッグ: コメント内容の確認
             print(f"DEBUG: Received comment text: {text}")
 
             # 既に送信されたコメントでない場合のみ送信
             if comment_id not in processed_comments:
-                send_to_discord(display_name, text, original_profile_image_url)  # アイコンURLも渡す
-                send_to_minecraft(text, comment['data']['timestamp'], display_name)  # 修正ポイント
-                processed_comments[comment_id] = current_time.isoformat()
+                send_to_discord(display_name, text, original_profile_image_url)
+                send_to_minecraft(text, comment['data']['timestamp'], display_name)
+
+                # コメントIDをキーとしてタイムスタンプとlive_idを保存
+                processed_comments[comment_id] = [current_time.isoformat(), live_id]
+
+                # 初めてのコメント判定を行い、必要なら報酬APIを送信
+                if is_first_time:
+                    # live_comments_tracker にコメントIDを追加して初コメントとして処理
+                    live_comments_tracker[live_id].add(user_id)
+                    send_reward_api(user_id, live_id, is_first_time)
 
         remove_expired_comments()
-
-        # 処理したコメントを保存
-        with open(processed_comments_file, 'w', encoding='utf-8') as file:
-            json.dump(processed_comments, file, ensure_ascii=False, indent=4)
-
-    except requests.RequestException as e:
-        print(f"Error fetching comments: {e}")
-
 
         # 処理したコメントを保存
         with open(processed_comments_file, 'w', encoding='utf-8') as file:
@@ -242,6 +261,91 @@ def poll_comments():
         fetch_comments(API_ENDPOINT)
         time.sleep(POLL_INTERVAL)
 
+def send_reward_api(user_id, live_id, is_first_time):
+    # APIエンドポイントのURL
+    url = 'https://ryuuneko.com/API/save_reward.php'
+    # 送信するデータ
+    data = {
+    'user_id': 'yt-UCnWzPMHQV996JEC6QDH3-Qg',        # ユーザーID
+    'live_id': 'rMd2BoUQb7c',                        # ライブID
+    'received_flag': '0',                             # 受取済みフラグ（1: 受け取った、0: 受け取っていない）
+    'api_key': api_key    # APIキー（適切なAPIキーに置き換え）
+    }
+
+    
+    try:
+        # POSTリクエストを送信
+        # POSTリクエストの送信
+        response = requests.post(url, data=data)
+        
+        # サーバー側のレスポンスコードを表示
+        print(f"Status Code: {response.status_code}")
+        
+        # サーバーからのレスポンス内容を表示（成功した場合）
+        if response.status_code == 200:
+            print(f"Response: {response.text}")
+        else:
+            print(f"Error: {response.text}")
+    
+    except requests.exceptions.RequestException as e:
+        print(f"Request failed: {e}")
+
+
+API_URL = 'https://ryuuneko.com/API/api.php'
+
+# コンフィグファイルからAPIキーを読み込む関数
+def load_api_key():
+    try:
+        with open(config_path, 'r', encoding='utf-8') as file:
+            config = json.load(file)
+            return config.get('api_key')  # コンフィグからapi_keyを取得
+    except FileNotFoundError:
+        return None  # コンフィグファイルがない場合
+
+# APIキーを生成する関数
+def generate_api_key():
+    response = requests.get(API_URL)
+    
+    if response.status_code == 200:
+        data = response.json()
+        
+        # 必要に応じてレスポンスの構造に合わせてキーを取り出す
+        if 'api_key' in data:
+            return data['api_key']
+        else:
+            print("APIからAPIキーを取得できませんでした。")
+            return None
+    else:
+        print(f"APIのリクエストに失敗しました: {response.status_code}")
+        return None
+
+# コンフィグにAPIキーが無い場合に新たにAPIキーを生成
+def ensure_api_key():
+    api_key = load_api_key()
+    
+    if not api_key:
+        print("APIキーが見つかりません。新しいAPIキーを生成します...")
+        api_key = generate_api_key()
+        
+        if api_key:
+            print(f"新しいAPIキーを取得しました: {api_key}")
+            
+            # コンフィグファイルにAPIキーを保存
+            with open(config_path, 'r+', encoding='utf-8') as file:
+                config = json.load(file)
+                config['api_key'] = api_key
+                file.seek(0)
+                json.dump(config, file, ensure_ascii=False, indent=4)
+                
+    return api_key
+
+# APIキーを確認して取得
+api_key = ensure_api_key()
+
+if api_key:
+    print(f"使用するAPIキー: {api_key}")
+else:
+    print("APIキーの取得に失敗しました。")
 
 # メイン
 if __name__ == "__main__":
