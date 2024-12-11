@@ -1,4 +1,4 @@
-CommentRelay /r
+CommentRelay
 CommentRelayは、ワンコメのローカルAPIから取得したリアルタイムコメントを、MinecraftサーバーとDiscordに送信するWindowsアプリケーションです。
 Discordへの送信にはWebhookを、Minecraftサーバーへの送信にはRCONを使用しています。
 exe形式で提供されているため、Python環境を準備する必要はありません。
